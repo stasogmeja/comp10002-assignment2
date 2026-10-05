@@ -57,7 +57,7 @@
   Policy, as described at https://academicintegrity.unimelb.edu.au.
 
   Signed by: Sutong Zhao 1884449
-  Dated:     2026-10-05
+  Dated:     2026-10-06
 
 */
 #include <stdio.h>
@@ -126,6 +126,11 @@ int read_cell_line(const char *line, cell_t *cell);
 void read_route_line(route_t *R, const char *line);
 
 // route checking and printing functions
+int route_status(route_t *R, cell_t initial, cell_t goal,
+                 unsigned char **grid, int rows, int cols);
+void print_cell(cell_t *cell);
+void print_route(route_t *R);
+void print_route_status(int status);
 
 // grid creation, clearing and printing functions
 unsigned char **make_grid(int rows, int cols);
@@ -136,6 +141,9 @@ void clear_grid(unsigned char **grid, int rows, int cols);
 int read_block_configuration(char *line, unsigned char **grid,
                              int rows, int cols);
 int count_blocks(unsigned char **grid, int rows, int cols);
+void print_stage0(int rows, int cols, int blocks,
+                  cell_t initial, cell_t goal, route_t *R,
+                  int status);
 
 // functions used by the route-repair breadth-first search
 
@@ -183,6 +191,11 @@ main(int argc, char *argv[]) {
         read_route_line(route, line);
     }
 
+    // check the original route and print all Stage 0 information
+    status = route_status(route, initial, goal, grid, rows, cols);
+    print_stage0(rows, cols, count_blocks(grid, rows, cols),
+                 initial, goal, route, status);
+
     // the route and grid are dynamically allocated, so both are freed here
     free_route(route);
     free_grid(grid, rows);
@@ -224,6 +237,32 @@ count_blocks(unsigned char **grid, int rows, int cols) {
         }
     }
     return blocks;
+}
+
+// print all information required for Stage 0
+void
+print_stage0(int rows, int cols, int blocks,
+             cell_t initial, cell_t goal, route_t *R,
+             int status) {
+    printf(SEP1, 0);
+
+    // print the grid dimensions and number of blocks first
+    printf("The grid has %d rows and %d columns.\n", rows, cols);
+    printf("The grid has %d block(s).\n", blocks);
+
+    // print the initial and goal cells using the same cell format as routes
+    printf("The initial cell in the grid is ");
+    print_cell(&initial);
+    printf(".\n");
+
+    printf("The goal cell in the grid is ");
+    print_cell(&goal);
+    printf(".\n");
+
+    // print the proposed route before reporting its status
+    printf("The proposed route in the grid is:\n");
+    print_route(R);
+    print_route_status(status);
 }
 
 // free one state and the cell stored inside it
@@ -343,10 +382,10 @@ read_route_line(route_t *R, const char *line) {
     short row, col;
 
     while (sscanf(p, "[%hd,%hd]", &row, &col) == 2) {
-        /* Add each parsed cell to the end so input order is preserved. */
+        // add each parsed cell to the end so input order is preserved
         insert_at_tail(R, make_cell(row, col));
 
-        /* Move to the next '[' before trying to read another cell. */
+        // move to the next '[' before trying to read another cell
         p++;
         while (*p != '\0' && *p != '[') {
             p++;
@@ -356,7 +395,99 @@ read_route_line(route_t *R, const char *line) {
 
 /* route functions ---------------------------------------------------------*/
 
+// check a route in the required order:
+// initial cell, goal cell, moves, then blocks
+int
+route_status(route_t *R, cell_t initial, cell_t goal,
+             unsigned char **grid, int rows, int cols) {
+    state_t *curr, *prev;
 
+    // first check that the route begins at the required initial cell
+    if (R->head == NULL || R->head->cell->row != initial.row ||
+        R->head->cell->col != initial.col) {
+        return ROUTE_INVALID_INITIAL;
+    }
+
+    // the route must end at the required goal cell
+    if (R->tail->cell->row != goal.row ||
+        R->tail->cell->col != goal.col) {
+        return ROUTE_INVALID_GOAL;
+    }
+
+    // check every pair of consecutive cells for a one-step move
+    prev = R->head;
+    curr = R->head->next;
+    while (curr != NULL) {
+        int dr = curr->cell->row - prev->cell->row;
+        int dc = curr->cell->col - prev->cell->col;
+
+        // a legal move has Manhattan distance exactly one
+        if ((dr < 0 ? -dr : dr) + (dc < 0 ? -dc : dc) != 1) {
+            return ROUTE_INVALID_MOVE;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    // only after all moves are legal do we check for blocks
+    for (curr = R->head; curr != NULL; curr = curr->next) {
+        if (curr->cell->row >= 0 && curr->cell->row < rows &&
+            curr->cell->col >= 0 && curr->cell->col < cols &&
+            grid[curr->cell->row][curr->cell->col]) {
+            return ROUTE_INVALID_BLOCK;
+        }
+    }
+    return ROUTE_VALID;
+}
+
+// print one cell in the exact [row,column] format used by the assignment
+void
+print_cell(cell_t *cell) {
+    printf("[%d,%d]", cell->row, cell->col);
+}
+
+// print the linked-list route, putting at most five cells on each line;
+// the final cell is followed by a full stop instead of an arrow
+void
+print_route(route_t *R) {
+    state_t *curr = R->head;
+    int count = 0;
+
+    while (curr != NULL) {
+        print_cell(curr->cell);
+        count++;
+
+        if (curr->next != NULL) {
+            printf("->");
+
+            // start a new line after every fifth printed cell
+            if (count == MAX_CELLS_PER_LINE) {
+                printf("\n");
+                count = 0;
+            }
+        } else {
+            // the final cell ends the route with a period
+            printf(".\n");
+        }
+        curr = curr->next;
+    }
+}
+
+// print the required message for the route status code
+void
+print_route_status(int status) {
+    if (status == ROUTE_INVALID_INITIAL) {
+        printf("The initial cell in the route is wrong!\n");
+    } else if (status == ROUTE_INVALID_GOAL) {
+        printf("The goal cell in the route is wrong!\n");
+    } else if (status == ROUTE_INVALID_MOVE) {
+        printf("There is an illegal move in this route!\n");
+    } else if (status == ROUTE_INVALID_BLOCK) {
+        printf("There is a block on this route!\n");
+    } else if (status == ROUTE_VALID) {
+        printf("The route is valid!\n");
+    }
+}
 
 /* grid functions ----------------------------------------------------------*/
 
@@ -377,7 +508,7 @@ unsigned char
     return grid;
 }
 
-/* Free every row of a grid and then free the row-pointer array. */
+// free every row of a grid and then free the row-pointer array
 void
 free_grid(unsigned char **grid, int rows) {
     for (int r = 0; r < rows; r++) {
@@ -386,7 +517,7 @@ free_grid(unsigned char **grid, int rows) {
     free(grid);
 }
 
-/* Set every cell in a grid to zero, removing all previous blocks. */
+// set every cell in a grid to zero, removing all previous blocks
 void
 clear_grid(unsigned char **grid, int rows, int cols) {
     for (int r = 0; r < rows; r++) {
