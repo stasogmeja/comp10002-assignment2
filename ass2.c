@@ -136,6 +136,8 @@ void print_route_status(int status);
 unsigned char **make_grid(int rows, int cols);
 void free_grid(unsigned char **grid, int rows);
 void clear_grid(unsigned char **grid, int rows, int cols);
+void print_grid(unsigned char **grid, int rows, int cols,
+                cell_t initial, cell_t goal, route_t *R);
 
 // functions used to read and process each block configuration
 int read_block_configuration(char *line, unsigned char **grid,
@@ -144,6 +146,12 @@ int count_blocks(unsigned char **grid, int rows, int cols);
 void print_stage0(int rows, int cols, int blocks,
                   cell_t initial, cell_t goal, route_t *R,
                   int status);
+void process_stage1(unsigned char **grid, int rows, int cols,
+                    cell_t initial, cell_t goal, route_t *R,
+                    int status, int has_stage2);
+void process_stage2(unsigned char **grid, int rows, int cols,
+                    cell_t initial, cell_t goal, route_t *R,
+                    char *line);
 
 // functions used by the route-repair breadth-first search
 
@@ -195,6 +203,15 @@ main(int argc, char *argv[]) {
     status = route_status(route, initial, goal, grid, rows, cols);
     print_stage0(rows, cols, count_blocks(grid, rows, cols),
                  initial, goal, route, status);
+    
+    // Stage 1 repairs at most the first broken segment
+    process_stage1(grid, rows, cols, initial, goal, route, status,
+                   stage2_started);
+
+    // Stage 2 uses the repaired route from the previous configuration
+    if (stage2_started) {
+        process_stage2(grid, rows, cols, initial, goal, route, line);
+    }
 
     // the route and grid are dynamically allocated, so both are freed here
     free_route(route);
@@ -263,6 +280,99 @@ print_stage0(int rows, int cols, int blocks,
     printf("The proposed route in the grid is:\n");
     print_route(R);
     print_route_status(status);
+}
+
+// perform the single repair required by Stage 1, if necessary
+void
+process_stage1(unsigned char **grid, int rows, int cols,
+               cell_t initial, cell_t goal, route_t *R,
+               int status, int has_stage2) {
+    printf(SEP1, 1);
+    print_grid(grid, rows, cols, initial, goal, R);
+
+    // a valid route or a non-block error does not enter the repair algorithm
+    if (status == ROUTE_INVALID_BLOCK) {
+        if (repair_route(R, grid, rows, cols)) {
+            // show the grid after the route has been repaired
+            printf(SEP2);
+            print_grid(grid, rows, cols, initial, goal, R);
+
+            // print the repaired route and its new status
+            printf(SEP2);
+            status = route_status(R, initial, goal, grid, rows, cols);
+            print_route(R);
+            print_route_status(status);
+        } else {
+            // if no repair exists, the route remains the original route
+            printf(SEP2);
+            print_grid(grid, rows, cols, initial, goal, R);
+            printf("The route cannot be repaired!\n");
+        }
+    }
+
+    // the final separator is printed only when Stage 2 does not follow
+    if (!has_stage2) {
+        printf(SEP3);
+    }
+}
+
+// process every Stage 2 block configuration in order;
+// the route is deliberately not reset between configurations
+void
+process_stage2(unsigned char **grid, int rows, int cols,
+               cell_t initial, cell_t goal, route_t *R,
+               char *line) {
+    int more_input = 1;
+
+    printf(SEP1, 2);
+
+    while (more_input) {
+        // each configuration starts immediately after the previous '$'
+        clear_grid(grid, rows, cols);
+
+        // read blocks until the '$' terminating this configuration
+        more_input = read_block_configuration(line, grid, rows, cols);
+
+        // show the grid before attempting any repair
+        print_grid(grid, rows, cols, initial, goal, R);
+
+        int status = route_status(R, initial, goal, grid, rows, cols);
+
+        // a configuration with a valid route needs no repair grids
+        if (status == ROUTE_VALID) {
+            printf(SEP3);
+        } else if (status == ROUTE_INVALID_BLOCK) {
+            // keep repairing the first blocked segment until the route is
+            // valid or no further repair can be found
+            while (status == ROUTE_INVALID_BLOCK) {
+                // apply the repair procedure without printing
+                // intermediate grids
+                if (!repair_route(R, grid, rows, cols)) {
+                    break;
+                }
+                status = route_status(R, initial, goal, grid, rows, cols);
+            }
+
+            // print only the final grid after all repair attempts
+            printf(SEP2);
+            print_grid(grid, rows, cols, initial, goal, R);
+            printf(SEP2);
+
+            // a fully repaired route is followed by its route and status
+            if (status == ROUTE_VALID) {
+                print_route(R);
+                print_route_status(status);
+            } else {
+                printf("The route cannot be repaired!\n");
+            }
+            printf(SEP3);
+        } else {
+            // initial/goal/move errors are not repaired by Stage 2
+            printf(SEP2);
+            printf("The route cannot be repaired!\n");
+            printf(SEP3);
+        }
+    }
 }
 
 // free one state and the cell stored inside it
@@ -525,6 +635,56 @@ clear_grid(unsigned char **grid, int rows, int cols) {
             grid[r][c] = 0;
         }
     }
+}
+
+// print the grid with the column header, row labels, blocks and route;
+// a temporary visited grid lets us mark every route cell without changing
+// the actual block configuration.
+
+void
+print_grid(unsigned char **grid, int rows, int cols,
+           cell_t initial, cell_t goal, route_t *R) {
+    unsigned char **visited = make_grid(rows, cols);
+    clear_grid(visited, rows, cols);
+
+    // mark every route cell which lies inside the displayed grid
+    for (state_t *curr = R->head; curr != NULL; curr = curr->next) {
+        if (curr->cell->row >= 0 && curr->cell->row < rows &&
+            curr->cell->col >= 0 && curr->cell->col < cols) {
+            visited[curr->cell->row][curr->cell->col] = 1;
+        }
+    }
+
+    // a leading space before the column numbers
+    putchar(' ');
+    for (int c = 0; c < cols; c++) {
+        putchar('0' + c % 10);
+    }
+    putchar('\n');
+
+    for (int r = 0; r < rows; r++) {
+        // row labels also repeat their final digit for large grids
+        putchar('0' + r % 10);
+
+        for (int c = 0; c < cols; c++) {
+            // blocks have priority over all other symbols
+            if (grid[r][c]) {
+                putchar(CELL_CODE_BLOCK);
+            } else if (r == initial.row && c == initial.col) {
+                putchar(CELL_CODE_INITIAL);
+            } else if (r == goal.row && c == goal.col) {
+                putchar(CELL_CODE_GOAL);
+            } else if (visited[r][c]) {
+                putchar(CELL_CODE_VISITED);
+            } else {
+                putchar(CELL_CODE_EMPTY);
+            }
+        }
+        putchar('\n');
+    }
+
+    // the temporary grid is no longer needed after printing
+    free_grid(visited, rows);
 }
 
 /* route repair ------------------------------------------------------------*/
