@@ -87,6 +87,7 @@
 
 #define MAX_CELLS_PER_LINE      5 // max number of cells to print per line
 #define MAX_LINE_LENGTH         256 // maximum input line buffer size
+#define NUM_DIRECTIONS          4 // number of directions checked during BFS
 
 /* type definitions --------------------------------------------------------*/
 
@@ -779,12 +780,12 @@ repair_route(route_t *R, unsigned char **grid, int rows, int cols) {
         cell_t current = queue[front++];
 
         // neighbour order: above, below, left, right
-        int nr[4] = {current.row - 1, current.row + 1,
+        int nr[NUM_DIRECTIONS] = {current.row - 1, current.row + 1,
                      current.row, current.row};
-        int nc[4] = {current.col, current.col,
+        int nc[NUM_DIRECTIONS] = {current.col, current.col,
                      current.col - 1, current.col + 1};
 
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < NUM_DIRECTIONS; i++) {
             // ignore neighbours outside the grid
             if (nr[i] < 0 || nr[i] >= rows ||
                 nc[i] < 0 || nc[i] >= cols) {
@@ -829,13 +830,13 @@ repair_route(route_t *R, unsigned char **grid, int rows, int cols) {
         insert_at_head(replacement, make_cell(current.row, current.col));
 
         int best = -1;
-        int nr[4] = {current.row - 1, current.row + 1,
+        int nr[NUM_DIRECTIONS] = {current.row - 1, current.row + 1,
                      current.row, current.row};
-        int nc[4] = {current.col, current.col,
+        int nc[NUM_DIRECTIONS] = {current.col, current.col,
                      current.col - 1, current.col + 1};
 
         // look for an adjacent queued cell with the smallest counter
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < NUM_DIRECTIONS; i++) {
             for (int j = 0; j < back; j++) {
                 if (queue[j].row == nr[i] && queue[j].col == nc[i] &&
                     (best == -1 || queue[j].counter < queue[best].counter)) {
