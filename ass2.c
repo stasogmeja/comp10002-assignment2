@@ -57,7 +57,7 @@
   Policy, as described at https://academicintegrity.unimelb.edu.au.
 
   Signed by: Sutong Zhao 1884449
-  Dated:     2026-10-06
+  Dated:     2026-10-07
 
 */
 #include <stdio.h>
@@ -154,7 +154,9 @@ void process_stage2(unsigned char **grid, int rows, int cols,
                     char *line);
 
 // functions used by the route-repair breadth-first search
-
+int repair_route(route_t *R, unsigned char **grid, int rows, int cols);
+int in_queue(cell_t *queue, int n, short row, short col);
+state_t *route_target(state_t *after, short row, short col);
 
 /* where it all happens ----------------------------------------------------*/
 int
@@ -688,3 +690,205 @@ print_grid(unsigned char **grid, int rows, int cols,
 }
 
 /* route repair ------------------------------------------------------------*/
+
+// return 1 when the given cell has already been added to the BFS queue
+int
+in_queue(cell_t *queue, int n, short row, short col) {
+    for (int i = 0; i < n; i++) {
+        if (queue[i].row == row && queue[i].col == col) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// find a cell in the unbroken suffix of the old route;
+// the returned state is used as the endpoint of the new repair path
+state_t
+*route_target(state_t *after, short row, short col) {
+    for (state_t *curr = after; curr != NULL; curr = curr->next) {
+        if (curr->cell->row == row && curr->cell->col == col) {
+            return curr;
+        }
+    }
+    return NULL;
+}
+
+// repair the first block-broken segment of the route using BFS;
+// the search starts at the route cell immediately before the first block;
+// neighbours are considered in the required order: above, below, left, right;
+// the first cell from the old route suffix reached by BFS is used
+// as the endpoint, giving the shortest repair with the required tie-break
+int
+repair_route(route_t *R, unsigned char **grid, int rows, int cols) {
+    state_t *broken = NULL;
+    state_t *start, *after;
+
+    // find the first route state which lies on a block
+    for (state_t *curr = R->head; curr != NULL; curr = curr->next) {
+        if (curr->cell->row >= 0 && curr->cell->row < rows &&
+            curr->cell->col >= 0 && curr->cell->col < cols &&
+            grid[curr->cell->row][curr->cell->col]) {
+            broken = curr;
+            break;
+        }
+    }
+
+    // a repair needs an unblocked route cell before the broken segment
+    if (broken == NULL || broken == R->head) {
+        return 0;
+    }
+
+    // find the route state immediately before the first broken cell
+    start = R->head;
+    while (start->next != broken) {
+        start = start->next;
+    }
+
+    // skip the consecutive blocked part of the old route
+    after = broken;
+    while (after != NULL &&
+           after->cell->row >= 0 && after->cell->row < rows &&
+           after->cell->col >= 0 && after->cell->col < cols &&
+           grid[after->cell->row][after->cell->col]) {
+        after = after->next;
+    }
+
+    // there is no route suffix to reconnect to
+    if (after == NULL) {
+        return 0;
+    }
+
+    // every grid cell needs at most one queue entry
+    int capacity = rows * cols;
+    cell_t *queue = (cell_t*)malloc(capacity * sizeof(*queue));
+    assert(queue != NULL);
+
+    int front = 0;
+    int back = 0;
+
+    // start BFS from the last valid cell before the broken segment
+    cell_t first = *start->cell;
+    first.counter = 0;
+    queue[back++] = first;
+
+    state_t *target = NULL;
+
+    while (front < back && target == NULL) {
+        // remove the oldest queue entry, which is the BFS property
+        cell_t current = queue[front++];
+
+        // neighbour order: above, below, left, right
+        int nr[4] = {current.row - 1, current.row + 1,
+                     current.row, current.row};
+        int nc[4] = {current.col, current.col,
+                     current.col - 1, current.col + 1};
+
+        for (int i = 0; i < 4; i++) {
+            // ignore neighbours outside the grid
+            if (nr[i] < 0 || nr[i] >= rows ||
+                nc[i] < 0 || nc[i] >= cols) {
+                continue;
+            }
+
+            // blocks and previously queued cells cannot be used again
+            if (grid[nr[i]][nc[i]] ||
+                in_queue(queue, back, nr[i], nc[i])) {
+                continue;
+            }
+
+            // record this cell and its BFS distance from the start
+            cell_t next;
+            next.row = nr[i];
+            next.col = nc[i];
+            next.counter = current.counter + 1;
+            queue[back++] = next;
+
+            // stop when the newly reached cell is on the old route suffix
+            target = route_target(after, nr[i], nc[i]);
+            if (target != NULL) {
+                break;
+            }
+        }
+    }
+
+    // if the BFS never reached the old route, the segment cannot be repaired
+    if (target == NULL) {
+        free(queue);
+        return 0;
+    }
+
+    // reconstruct the shortest path from target back to start;
+    // the smallest counter identifies a predecessor one step closer to start
+    route_t *replacement = make_empty_route();
+    cell_t current = *target->cell;
+
+    while (current.row != start->cell->row ||
+           current.col != start->cell->col) {
+        // add the current path cell at the front to reverse the path
+        insert_at_head(replacement, make_cell(current.row, current.col));
+
+        int best = -1;
+        int nr[4] = {current.row - 1, current.row + 1,
+                     current.row, current.row};
+        int nc[4] = {current.col, current.col,
+                     current.col - 1, current.col + 1};
+
+        // look for an adjacent queued cell with the smallest counter
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < back; j++) {
+                if (queue[j].row == nr[i] && queue[j].col == nc[i] &&
+                    (best == -1 || queue[j].counter < queue[best].counter)) {
+                    best = j;
+                }
+            }
+        }
+
+        // this should not happen for a valid BFS path
+        if (best == -1) {
+            free_route(replacement);
+            free(queue);
+            return 0;
+        }
+        current = queue[best];
+    }
+
+    // include the starting route cell in the temporary replacement path
+    insert_at_head(replacement,
+                   make_cell(start->cell->row, start->cell->col));
+
+    // delete the old broken segment, but keep target and the route after it
+    state_t *curr = start->next;
+    while (curr != target) {
+        state_t *next = curr->next;
+        free_state(curr);
+        curr = next;
+    }
+
+    // insert the replacement cells after start and before target;
+    // the start cell already exists in the original route, so skip it here;
+    // the old broken segment has already been deleted, so reconnect start
+    // directly to target before inserting any intermediate cells
+    start->next = target;
+
+    state_t *new_curr = replacement->head->next;
+    state_t *previous = start;
+
+    while (new_curr != NULL && new_curr->next != NULL) {
+        state_t *new_state = (state_t*)malloc(sizeof(*new_state));
+        assert(new_state != NULL);
+
+        // copy only the coordinate information needed by the route
+        new_state->cell = make_cell(new_curr->cell->row,
+                                    new_curr->cell->col);
+        new_state->next = target;
+        previous->next = new_state;
+        previous = new_state;
+        new_curr = new_curr->next;
+    }
+
+    // the temporary replacement list and BFS queue are no longer needed
+    free_route(replacement);
+    free(queue);
+    return 1;
+}
